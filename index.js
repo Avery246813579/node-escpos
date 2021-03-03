@@ -13,9 +13,12 @@ function Network(address, port) {
   this.address = address;
   this.port = port || 9100;
   this.device = new net.Socket();
+  this.device.setKeepAlive(true, 5);
 
-  this.attemptingReconnect = null;
+  this.attemptedReconnections = 3;
   this.isConnected = false;
+  this.killed = false;
+  this.timeoutId = -1;
 
   return this;
 };
@@ -28,6 +31,7 @@ util.inherits(Network, EventEmitter);
  * @param {Object} params                       Parameters for callback on actions
  * @param {Function} params.onSocketClose       Function called when the socket is disconnected
  * @param {Function} params.onSocketConnect     Function called when the socket is connected
+ * @param {Function} params.onSocketKill        Function called when the socket is killed after reconnect attempts
  *
  * @return
  */
@@ -35,32 +39,16 @@ Network.prototype.open = function (callback, params = {}) {
   var self = this;
   //connect to net printer by socket (port,ip)
   this.device.on("error", (err) => {
+    clearTimeout(self.timeoutId);
+    self.killed = true;
+
+    params.onSocketKill && params.onSocketKill(self.device);
     callback && callback(err, self.device);
-  }).on("data", buf => {
-    // console.log('printer say:', buf);
   }).on("close", () => {
-    self.isConnected = false;
-
-    params.onSocketClose && params.onSocketClose(self.device);
-
-    console.log(`socket-${self.device._id} has been closed`);
-    if (self.attemptingReconnect !== null) {
-      return console.log(`socket-${self.device._id} has failed it's auto reconnect and has been closed`);
-    }
-
-    self.attemptingReconnect = Date.now();
-
-    setTimeout(function () {
-      try {
-        console.log(`socket-${self.device._id} is attempting to reconnect`);
-        Network.prototype.open.call(self, callback, params);
-      } catch (err) {
-        console.log(`socket-${self.device._id} failed it's reconnect`);
-      }
-    }, 2000);
   }).connect(this.port, this.address, function (err) {
-    self.attemptingReconnect = null;
+    self.attemptedReconnections = 0;
     self.isConnected = true;
+    clearTimeout(self.timeoutId);
 
     self.emit("connect", self.device);
 
@@ -85,9 +73,9 @@ Network.prototype.write = function (data, callback) {
  *
  * @return {Boolean}
  */
-Network.prototype.isConnected = function() {
+Network.prototype.isConnected = function () {
   return this.isConnected;
-}
+};
 
 Network.prototype.read = function (callback) {
   this.device.on("data", buf => {
